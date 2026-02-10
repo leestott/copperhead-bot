@@ -112,9 +112,11 @@ class CopperheadBot:
             True if connection successful
         """
         try:
-            self.log(f"Connecting to {self.server_url}...")
+            # Append /join to the server URL for auto-matchmaking
+            url = self.server_url.rstrip("/") + "/join"
+            self.log(f"Connecting to {url}...")
             self.ws = await websockets.connect(
-                self.server_url,
+                url,
                 ping_interval=20,
                 ping_timeout=20,
                 close_timeout=10
