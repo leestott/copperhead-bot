@@ -13,7 +13,6 @@ Or with environment variables:
 """
 
 import os
-import sys
 import json
 import asyncio
 import argparse
@@ -25,14 +24,22 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import websockets
-import websockets.exceptions
 from websockets.client import WebSocketClientProtocol
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+    InvalidHandshake,
+    InvalidURI,
+)
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # Load .env file if present
-except ImportError:
-    pass  # dotenv is optional
+    load_dotenv()
+except ModuleNotFoundError:
+    logging.getLogger(__name__).debug("python-dotenv not installed; .env files will not be loaded")
+except Exception:
+    logging.getLogger(__name__).exception("Unexpected error importing/loading dotenv")
 
 from strategy import StrategyEngine
 
@@ -148,6 +155,8 @@ class CopperheadBot:
             self._consecutive_failures = 0
             self.log("Connected successfully!")
             return True
+        except asyncio.CancelledError:
+            raise
         except socket.gaierror as e:
             self.log(f"DNS resolution failed for {url}: {e}", "error")
             return False
@@ -157,10 +166,7 @@ class CopperheadBot:
         except (OSError, asyncio.TimeoutError) as e:
             self.log(f"Connection failed (network): {e}", "error")
             return False
-        except (
-            websockets.exceptions.InvalidURI,
-            websockets.exceptions.InvalidHandshake,
-        ) as e:
+        except (InvalidURI, InvalidHandshake) as e:
             self.log(f"Connection failed (handshake/URI): {e}", "error")
             return False
         except Exception:
@@ -172,8 +178,12 @@ class CopperheadBot:
         if self.ws:
             try:
                 await self.ws.close()
-            except websockets.exceptions.ConnectionClosed:
-                logger.debug("WebSocket already closed during disconnect")
+            except asyncio.CancelledError:
+                raise
+            except (ConnectionClosed, asyncio.TimeoutError):
+                logger.debug("WebSocket already closed or timed out during disconnect")
+            except OSError as e:
+                logger.warning("OS error closing websocket: %s", e)
             except Exception:
                 logger.exception("Unexpected error closing websocket")
             finally:
@@ -199,8 +209,14 @@ class CopperheadBot:
         
         try:
             await self.ws.send(msg_str)
-        except websockets.exceptions.ConnectionClosed as e:
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosed as e:
             self.log(f"Send failed (connection closed): {e}", "warning")
+            self.connected = False
+            self.ws = None
+        except OSError as e:
+            self.log(f"Send failed (OS error): {e}", "error")
             self.connected = False
             self.ws = None
         except Exception:
@@ -362,11 +378,19 @@ class CopperheadBot:
         
         self.game_state = game
         
-        # Update grid dimensions
+        # Update grid dimensions with validation
         grid = game.get("grid", {})
         if isinstance(grid, dict):
-            self.grid_width = grid.get("width", 30)
-            self.grid_height = grid.get("height", 20)
+            raw_w = grid.get("width", 30)
+            raw_h = grid.get("height", 20)
+            if isinstance(raw_w, int) and raw_w > 0:
+                self.grid_width = raw_w
+            else:
+                self.log(f"Invalid grid width {raw_w!r}, keeping {self.grid_width}", "warning")
+            if isinstance(raw_h, int) and raw_h > 0:
+                self.grid_height = raw_h
+            else:
+                self.log(f"Invalid grid height {raw_h!r}, keeping {self.grid_height}", "warning")
         try:
             self.strategy.update_grid_size(self.grid_width, self.grid_height)
         except Exception:
@@ -410,13 +434,20 @@ class CopperheadBot:
 
     def _fallback_direction(self, my_snake: dict[str, Any]) -> Optional[str]:
         """Best-effort safe direction when the strategy engine fails."""
-        body = my_snake.get("body", [])
-        if not body:
-            return None
-        head = (body[0][0], body[0][1])
         current_dir = my_snake.get("direction", "right")
+        try:
+            body = my_snake.get("body", [])
+            if not body:
+                return current_dir
+            seg = body[0]
+            head = (int(seg[0]), int(seg[1]))
+            body_set: set[tuple[int, int]] = set()
+            for s in body:
+                body_set.add((int(s[0]), int(s[1])))
+        except (TypeError, IndexError, ValueError) as e:
+            logger.warning("Malformed snake body in fallback: %s", e)
+            return current_dir
         opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
-        body_set = {(s[0], s[1]) for s in body}
         for d in ("up", "down", "left", "right"):
             if d == opposites.get(current_dir):
                 continue
@@ -455,11 +486,9 @@ class CopperheadBot:
                 except Exception:
                     logger.exception("Error handling message")
         
-        except (
-            websockets.exceptions.ConnectionClosed,
-            websockets.exceptions.ConnectionClosedOK,
-            websockets.exceptions.ConnectionClosedError,
-        ) as e:
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionClosed, ConnectionClosedOK, ConnectionClosedError) as e:
             self.log(f"Connection closed: {e}", "warning")
         except Exception:
             logger.exception("Unexpected game loop error")
@@ -549,17 +578,42 @@ Environment variables:
     return parser.parse_args()
 
 
+def _validate_server_url(url: str) -> str:
+    """Validate and return the server URL, or raise ValueError."""
+    url = url.strip()
+    if not url:
+        raise ValueError("Server URL must not be empty")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("ws", "wss"):
+        raise ValueError(
+            f"Server URL must use ws:// or wss:// scheme, got {parsed.scheme!r}"
+        )
+    return url
+
+
 async def main() -> None:
     """Main async entry point."""
     args = parse_args()
+
+    # Validate inputs
+    try:
+        server_url = _validate_server_url(args.server)
+    except ValueError as e:
+        logger.error("Invalid --server value: %s", e)
+        raise SystemExit(1) from e
+
+    name = args.name.strip() if args.name else ""
+    if not name:
+        logger.error("Bot name (--name) must be a non-empty string")
+        raise SystemExit(1)
     
     # Validate difficulty
     difficulty = max(1, min(10, args.difficulty))
     
     # Create bot
     bot = CopperheadBot(
-        server_url=args.server,
-        name=args.name,
+        server_url=server_url,
+        name=name,
         difficulty=difficulty,
         quiet=args.quiet
     )
@@ -587,6 +641,8 @@ async def main() -> None:
         await bot.run()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        logger.exception("Fatal error in main loop")
     finally:
         await bot.disconnect()
     
@@ -594,4 +650,14 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.getLogger(__name__).info("Interrupted by user")
+    except SystemExit:
+        raise
+    except Exception:
+        logging.getLogger(__name__).critical(
+            "Unhandled exception — shutting down", exc_info=True
+        )
+        raise SystemExit(1)

@@ -7,6 +7,7 @@ Optimized for competitive tournament play.
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 import heapq
 
@@ -14,6 +15,10 @@ from utils import (
     get_neighbors, manhattan_distance, is_in_bounds,
     get_new_position, ALL_DIRECTIONS, OPPOSITES
 )
+
+logger = logging.getLogger(__name__)
+
+_VALID_DIRECTIONS = frozenset(ALL_DIRECTIONS)
 
 
 def predict_opponent_move(
@@ -34,7 +39,9 @@ def predict_opponent_move(
     Returns:
         Predicted next head position
     """
-    opposite = OPPOSITES.get(opponent_direction or "", "")
+    if not opponent_direction or opponent_direction not in _VALID_DIRECTIONS:
+        opponent_direction = ""
+    opposite = OPPOSITES.get(opponent_direction, "")
     best_pos = None
     best_score = float('-inf')
     
@@ -185,6 +192,9 @@ def lookahead_evaluate(
     Returns:
         Score for this move considering future positions
     """
+    if direction not in _VALID_DIRECTIONS:
+        return float('-inf')
+
     if not body:
         # Without a body we can only do a shallow space eval
         new_x, new_y = get_new_position(head[0], head[1], direction)
