@@ -19,10 +19,11 @@ import asyncio
 import argparse
 import logging
 import signal
-from typing import Optional, Dict, Any
+from typing import Any, Optional
 
 try:
     import websockets
+    import websockets.exceptions
     from websockets.client import WebSocketClientProtocol
 except ImportError:
     print("ERROR: websockets package not installed. Run: pip install websockets")
@@ -76,12 +77,12 @@ class CopperheadBot:
         
         # Connection state
         self.ws: Optional[WebSocketClientProtocol] = None
-        self.connected = False
+        self.connected: bool = False
         self.player_id: Optional[int] = None
         self.room_id: Optional[str] = None
         
         # Game state
-        self.game_state: Optional[Dict] = None
+        self.game_state: Optional[dict[str, Any]] = None
         self.game_running = False
         self.grid_width = 30
         self.grid_height = 20
@@ -99,10 +100,19 @@ class CopperheadBot:
         if quiet:
             logger.setLevel(logging.WARNING)
     
-    def log(self, msg: str, level: str = "info"):
+    _LOG_METHODS = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
+    }
+
+    def log(self, msg: str, level: str = "info") -> None:
         """Log message if not in quiet mode."""
         if not self.quiet:
-            getattr(logger, level)(msg)
+            numeric_level = self._LOG_METHODS.get(level, logging.INFO)
+            logger.log(numeric_level, msg)
     
     async def connect(self) -> bool:
         """
@@ -111,10 +121,9 @@ class CopperheadBot:
         Returns:
             True if connection successful
         """
+        url = self.server_url.rstrip("/") + "/join"
+        self.log(f"Connecting to {url}...")
         try:
-            # Append /join to the server URL for auto-matchmaking
-            url = self.server_url.rstrip("/") + "/join"
-            self.log(f"Connecting to {url}...")
             self.ws = await websockets.connect(
                 url,
                 ping_interval=20,
@@ -124,21 +133,34 @@ class CopperheadBot:
             self.connected = True
             self.log("Connected successfully!")
             return True
-        except Exception as e:
-            self.log(f"Connection failed: {e}", "error")
+        except (OSError, asyncio.TimeoutError) as e:
+            self.log(f"Connection failed (network): {e}", "error")
+            return False
+        except (
+            websockets.exceptions.InvalidURI,
+            websockets.exceptions.InvalidHandshake,
+        ) as e:
+            self.log(f"Connection failed (handshake/URI): {e}", "error")
+            return False
+        except Exception:
+            logger.exception("Unexpected error during connect to %s", url)
             return False
     
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         """Close WebSocket connection gracefully."""
         if self.ws:
             try:
                 await self.ws.close()
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("WebSocket already closed during disconnect")
             except Exception:
-                pass
+                logger.exception("Unexpected error closing websocket")
+            finally:
+                self.ws = None
         self.connected = False
         self.log("Disconnected from server")
     
-    async def send_message(self, message: Dict[str, Any]):
+    async def send_message(self, message: dict[str, Any]) -> None:
         """
         Send JSON message to server.
         
@@ -150,11 +172,20 @@ class CopperheadBot:
         
         try:
             msg_str = json.dumps(message)
+        except (TypeError, ValueError) as e:
+            self.log(f"Message serialization failed: {e}", "error")
+            return
+        
+        try:
             await self.ws.send(msg_str)
-        except Exception as e:
-            self.log(f"Send failed: {e}", "error")
+        except websockets.exceptions.ConnectionClosed as e:
+            self.log(f"Send failed (connection closed): {e}", "warning")
+            self.connected = False
+            self.ws = None
+        except Exception:
+            logger.exception("Unexpected error sending message")
     
-    async def send_ready(self):
+    async def send_ready(self) -> None:
         """Send ready signal to server."""
         await self.send_message({
             "action": "ready",
@@ -163,7 +194,7 @@ class CopperheadBot:
         })
         self.log(f"Sent ready signal as '{self.name}'")
     
-    async def send_move(self, direction: str):
+    async def send_move(self, direction: str) -> None:
         """
         Send move command to server.
         
@@ -179,7 +210,7 @@ class CopperheadBot:
             "direction": direction
         })
     
-    async def handle_message(self, data: Dict[str, Any]):
+    async def handle_message(self, data: dict[str, Any]) -> None:
         """
         Process incoming server message.
         
@@ -236,7 +267,7 @@ class CopperheadBot:
             final_score = data.get("final_score", {})
             
             if winner == self.player_id:
-                self.log("🏆 MATCH WON! 🏆")
+                self.log("MATCH WON!")
             else:
                 self.log("Match lost.")
             
@@ -256,7 +287,7 @@ class CopperheadBot:
             # Tournament ended
             champion = data.get("champion", "Unknown")
             if champion == self.name:
-                self.log("🏆🏆🏆 TOURNAMENT CHAMPION! 🏆🏆🏆")
+                self.log("TOURNAMENT CHAMPION!")
             else:
                 self.log(f"Tournament complete. Champion: {champion}")
             self.shutdown_requested = True
@@ -276,7 +307,7 @@ class CopperheadBot:
             if msg_type:
                 self.log(f"Unknown message type: {msg_type}", "debug")
     
-    async def handle_game_state(self, game: Dict[str, Any]):
+    async def handle_game_state(self, game: dict[str, Any]) -> None:
         """
         Process game state and make move decision.
         
@@ -316,7 +347,7 @@ class CopperheadBot:
             self.log(f"No valid move found, maintaining {current_dir}", "warning")
             await self.send_move(current_dir)
     
-    async def play(self):
+    async def play(self) -> None:
         """
         Main game loop.
         
@@ -339,17 +370,21 @@ class CopperheadBot:
                     await self.handle_message(data)
                 except json.JSONDecodeError:
                     self.log(f"Invalid JSON: {message[:100]}", "warning")
-                except Exception as e:
-                    self.log(f"Error handling message: {e}", "error")
+                except Exception:
+                    logger.exception("Error handling message")
         
-        except websockets.exceptions.ConnectionClosed as e:
+        except (
+            websockets.exceptions.ConnectionClosed,
+            websockets.exceptions.ConnectionClosedOK,
+            websockets.exceptions.ConnectionClosedError,
+        ) as e:
             self.log(f"Connection closed: {e}", "warning")
-        except Exception as e:
-            self.log(f"Game loop error: {e}", "error")
+        except Exception:
+            logger.exception("Unexpected game loop error")
         
         self.log("Game loop ended")
     
-    async def run(self):
+    async def run(self) -> None:
         """
         Main entry point - connect and play.
         
@@ -365,7 +400,7 @@ class CopperheadBot:
                 await asyncio.sleep(5)
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="CopperHead Tournament Bot",
@@ -393,10 +428,17 @@ Environment variables:
         default=os.environ.get("BOT_NAME", "CopperheadChampion"),
         help="Bot display name"
     )
+    _raw_difficulty = os.environ.get("BOT_DIFFICULTY", "10")
+    try:
+        _default_difficulty = int(_raw_difficulty)
+    except ValueError:
+        logger.warning("Invalid BOT_DIFFICULTY env var %r, defaulting to 10", _raw_difficulty)
+        _default_difficulty = 10
+
     parser.add_argument(
         "--difficulty", "-d",
         type=int,
-        default=int(os.environ.get("BOT_DIFFICULTY", "10")),
+        default=_default_difficulty,
         help="Difficulty level 1-10 (10 = optimal play)"
     )
     parser.add_argument(

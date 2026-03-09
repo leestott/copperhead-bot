@@ -5,7 +5,7 @@ Implements A*, BFS, flood-fill, Voronoi partitioning, and advanced space analysi
 Optimized for competitive tournament play.
 """
 
-from typing import Tuple, List, Set, Dict, Optional
+from typing import Tuple, List, Set, Optional
 from collections import deque
 import heapq
 
@@ -141,7 +141,6 @@ def calculate_voronoi_control(
 def find_tail_chase_path(
     head: Tuple[int, int],
     tail: Tuple[int, int],
-    body: List[Tuple[int, int]],
     width: int,
     height: int,
     obstacles: Set[Tuple[int, int]]
@@ -207,7 +206,7 @@ def lookahead_evaluate(
     # Simulate move
     new_body = [new_pos] + body[:-1]  # Move without eating
     new_obstacles = obstacles | {head}
-    if body[-1] in new_obstacles:
+    if body and body[-1] in new_obstacles:
         new_obstacles.discard(body[-1])  # Tail moved
     
     # Evaluate future moves

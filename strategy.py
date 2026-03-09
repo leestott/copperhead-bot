@@ -186,7 +186,7 @@ class StrategyEngine:
         if not safe_moves:
             # Try tail-chasing as survival tactic
             tail_dir = find_tail_chase_path(
-                my_head, my_tail, my_body,
+                my_head, my_tail,
                 self.grid_width, self.grid_height, obstacles
             )
             if tail_dir:
