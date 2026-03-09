@@ -154,6 +154,8 @@ class CopperheadBot:
             self.connected = True
             self._consecutive_failures = 0
             self.log("Connected successfully!")
+            # Send join action to enter the lobby (required by server API)
+            await self.send_join()
             return True
         except asyncio.CancelledError:
             raise
@@ -222,11 +224,18 @@ class CopperheadBot:
         except Exception:
             logger.exception("Unexpected error sending message")
     
+    async def send_join(self) -> None:
+        """Send join action to enter the lobby."""
+        await self.send_message({
+            "action": "join",
+            "name": self.name
+        })
+        self.log(f"Sent join request as '{self.name}'")
+
     async def send_ready(self) -> None:
         """Send ready signal to server."""
         await self.send_message({
             "action": "ready",
-            "mode": "two_player",
             "name": self.name
         })
         self.log(f"Sent ready signal as '{self.name}'")
@@ -258,12 +267,28 @@ class CopperheadBot:
         """
         msg_type = data.get("type", "")
         
-        if msg_type == "joined":
-            # We've been assigned to a room
+        if msg_type == "lobby_joined":
+            # Confirmed we joined the lobby
+            self.log(f"Joined lobby as '{data.get('name', self.name)}'")
+
+        elif msg_type == "lobby_update":
+            # Lobby state changed — informational
+            self.log("Lobby updated", "debug")
+
+        elif msg_type == "lobby_kicked":
+            # Kicked from the lobby by admin
+            self.log("Kicked from lobby by admin", "warning")
+            self.shutdown_requested = True
+
+        elif msg_type == "lobby_left":
+            # Confirmed lobby leave
+            self.log("Left lobby")
+
+        elif msg_type == "joined":
+            # Legacy: assigned to a room
             self.player_id = data.get("player_id")
             self.room_id = data.get("room_id")
             self.log(f"Joined room {self.room_id} as player {self.player_id}")
-            # Send ready signal
             await self.send_ready()
         
         elif msg_type == "waiting":

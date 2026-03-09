@@ -308,7 +308,9 @@ class StrategyEngine:
             
             # Prioritize grapes heavily
             if grapes:
-                grape_pos = (grapes[0]["x"], grapes[0]["y"])
+                grape = grapes[0]
+                grape_pos = (grape["x"], grape["y"])
+                grape_lifetime = grape.get("lifetime")  # ticks until expiry, or None
                 if new_pos == grape_pos:
                     food_score = self.WEIGHT_GRAPES
                 else:
@@ -316,7 +318,11 @@ class StrategyEngine:
                         new_pos, grape_pos,
                         self.grid_width, self.grid_height, obstacles
                     )
-                    if grape_dist > 0:
+                    # Skip if grape will expire before we can reach it
+                    reachable = grape_dist > 0 and (
+                        grape_lifetime is None or grape_dist < grape_lifetime
+                    )
+                    if reachable:
                         race_result = food_race_winner(
                             new_pos, opponent_head, grape_pos,
                             self.grid_width, self.grid_height, obstacles
@@ -326,8 +332,14 @@ class StrategyEngine:
                         elif race_result == "tie":
                             food_score = self.WEIGHT_GRAPES * 0.3 / (grape_dist + 1)
             
-            # Regular food
-            closest_food = find_closest_food(new_pos, foods)
+            # Regular food (filter out food that will expire too soon)
+            reachable_foods = []
+            for f in foods:
+                lt = f.get("lifetime")
+                if lt is not None and lt <= 1:
+                    continue  # will expire before next tick
+                reachable_foods.append(f)
+            closest_food = find_closest_food(new_pos, reachable_foods)
             if closest_food:
                 if new_pos == closest_food:
                     food_score = max(food_score, self.WEIGHT_FOOD * 10)
@@ -336,7 +348,17 @@ class StrategyEngine:
                         new_pos, closest_food,
                         self.grid_width, self.grid_height, obstacles
                     )
-                    if path_dist > 0:
+                    # Find the lifetime of the closest food item
+                    closest_lifetime = None
+                    for f in reachable_foods:
+                        if (f["x"], f["y"]) == closest_food:
+                            closest_lifetime = f.get("lifetime")
+                            break
+                    # Skip if food will expire before we can reach it
+                    food_reachable = path_dist > 0 and (
+                        closest_lifetime is None or path_dist < closest_lifetime
+                    )
+                    if food_reachable:
                         # Check if we can win the race
                         race = food_race_winner(
                             new_pos, opponent_head, closest_food,
