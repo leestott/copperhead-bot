@@ -18,16 +18,15 @@ import json
 import asyncio
 import argparse
 import logging
+import random
 import signal
+import socket
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
-try:
-    import websockets
-    import websockets.exceptions
-    from websockets.client import WebSocketClientProtocol
-except ImportError:
-    print("ERROR: websockets package not installed. Run: pip install websockets")
-    sys.exit(1)
+import websockets
+import websockets.exceptions
+from websockets.client import WebSocketClientProtocol
 
 try:
     from dotenv import load_dotenv
@@ -43,7 +42,10 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%H:%M:%S'
 )
-logger = logging.getLogger("CopperheadBot")
+logger = logging.getLogger(__name__)
+
+_MAX_RECONNECT_DELAY = 60
+_BASE_RECONNECT_DELAY = 2
 
 
 class CopperheadBot:
@@ -96,6 +98,9 @@ class CopperheadBot:
         
         # Shutdown flag
         self.shutdown_requested = False
+
+        # Reconnection tracking
+        self._consecutive_failures = 0
         
         if quiet:
             logger.setLevel(logging.WARNING)
@@ -114,6 +119,15 @@ class CopperheadBot:
             numeric_level = self._LOG_METHODS.get(level, logging.INFO)
             logger.log(numeric_level, msg)
     
+    @staticmethod
+    def _build_connect_url(server_url: str) -> str:
+        """Build the websocket connect URL, appending /join if needed."""
+        parsed = urlparse(server_url)
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/join"):
+            path = path + "/join"
+        return urlunparse(parsed._replace(path=path))
+
     async def connect(self) -> bool:
         """
         Establish WebSocket connection to server.
@@ -121,7 +135,7 @@ class CopperheadBot:
         Returns:
             True if connection successful
         """
-        url = self.server_url.rstrip("/") + "/join"
+        url = self._build_connect_url(self.server_url)
         self.log(f"Connecting to {url}...")
         try:
             self.ws = await websockets.connect(
@@ -131,8 +145,15 @@ class CopperheadBot:
                 close_timeout=10
             )
             self.connected = True
+            self._consecutive_failures = 0
             self.log("Connected successfully!")
             return True
+        except socket.gaierror as e:
+            self.log(f"DNS resolution failed for {url}: {e}", "error")
+            return False
+        except ConnectionRefusedError as e:
+            self.log(f"Connection refused at {url}: {e}", "error")
+            return False
         except (OSError, asyncio.TimeoutError) as e:
             self.log(f"Connection failed (network): {e}", "error")
             return False
@@ -238,21 +259,34 @@ class CopperheadBot:
             mode = data.get("mode", "two_player")
             self.log(f"Game starting! Mode: {mode}")
             self.game_running = True
-            self.strategy.reset_game_state()
+            try:
+                self.strategy.reset_game_state()
+            except Exception:
+                logger.exception("Error resetting strategy state")
         
         elif msg_type == "state":
             # Game tick - make a move
-            game = data.get("game", {})
+            game = data.get("game")
+            if not isinstance(game, dict):
+                self.log("Received 'state' message with invalid game payload", "warning")
+                return
             await self.handle_game_state(game)
         
         elif msg_type == "gameover":
             # Round ended
             winner = data.get("winner")
-            self.current_wins = data.get("wins", {}).get(str(self.player_id), 0)
+            wins = data.get("wins", {})
+            if self.player_id is not None and isinstance(wins, dict):
+                self.current_wins = wins.get(str(self.player_id), 0)
+            else:
+                self.log("Cannot read wins: player_id not set or wins invalid", "warning")
             self.points_to_win = data.get("points_to_win", 3)
             
             we_won = winner == self.player_id
-            self.strategy.record_game_result(we_won)
+            try:
+                self.strategy.record_game_result(we_won)
+            except Exception:
+                logger.exception("Error recording game result")
             
             result = "WON" if we_won else "LOST"
             self.log(f"Round {result}! Score: {self.current_wins}/{self.points_to_win}")
@@ -321,23 +355,35 @@ class CopperheadBot:
         """
         if not game.get("running", False):
             return
+
+        if self.player_id is None:
+            self.log("Received game state but player_id is not set, skipping", "warning")
+            return
         
         self.game_state = game
         
         # Update grid dimensions
         grid = game.get("grid", {})
-        self.grid_width = grid.get("width", 30)
-        self.grid_height = grid.get("height", 20)
-        self.strategy.update_grid_size(self.grid_width, self.grid_height)
+        if isinstance(grid, dict):
+            self.grid_width = grid.get("width", 30)
+            self.grid_height = grid.get("height", 20)
+        try:
+            self.strategy.update_grid_size(self.grid_width, self.grid_height)
+        except Exception:
+            logger.exception("Error updating grid size")
         
         # Verify we're still alive
-        snakes = game.get("snakes", {})
+        snakes = game.get("snakes")
+        if not isinstance(snakes, dict):
+            self.log("Invalid snakes payload in game state", "warning")
+            return
+
         my_snake = snakes.get(str(self.player_id))
         if not my_snake or not my_snake.get("alive", True):
             return
         
-        # Calculate best move
-        direction = self.strategy.calculate_move(game, self.player_id)
+        # Calculate best move with fallback on strategy failure
+        direction = self._safe_calculate_move(game, self.player_id, my_snake)
         
         if direction:
             await self.send_move(direction)
@@ -346,6 +392,39 @@ class CopperheadBot:
             current_dir = my_snake.get("direction", "right")
             self.log(f"No valid move found, maintaining {current_dir}", "warning")
             await self.send_move(current_dir)
+
+    def _safe_calculate_move(
+        self,
+        game: dict[str, Any],
+        player_id: int,
+        my_snake: dict[str, Any],
+    ) -> Optional[str]:
+        """Call strategy engine with fallback on unexpected errors."""
+        try:
+            return self.strategy.calculate_move(game, player_id)
+        except Exception:
+            logger.exception("Strategy engine error; falling back to safe move")
+            # Lightweight fallback: pick the first non-reversing, in-bounds,
+            # non-body direction so the bot doesn't crash.
+            return self._fallback_direction(my_snake)
+
+    def _fallback_direction(self, my_snake: dict[str, Any]) -> Optional[str]:
+        """Best-effort safe direction when the strategy engine fails."""
+        body = my_snake.get("body", [])
+        if not body:
+            return None
+        head = (body[0][0], body[0][1])
+        current_dir = my_snake.get("direction", "right")
+        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
+        body_set = {(s[0], s[1]) for s in body}
+        for d in ("up", "down", "left", "right"):
+            if d == opposites.get(current_dir):
+                continue
+            dx, dy = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}[d]
+            nx, ny = head[0] + dx, head[1] + dy
+            if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height and (nx, ny) not in body_set:
+                return d
+        return current_dir
     
     async def play(self) -> None:
         """
@@ -367,6 +446,9 @@ class CopperheadBot:
                 
                 try:
                     data = json.loads(message)
+                    if not isinstance(data, dict):
+                        self.log(f"Non-dict JSON message: {str(message)[:100]}", "warning")
+                        continue
                     await self.handle_message(data)
                 except json.JSONDecodeError:
                     self.log(f"Invalid JSON: {message[:100]}", "warning")
@@ -389,15 +471,31 @@ class CopperheadBot:
         Main entry point - connect and play.
         
         Handles connection, reconnection, and graceful shutdown.
+        Uses exponential backoff with jitter for reconnection.
         """
         while not self.shutdown_requested:
             if await self.connect():
+                self._consecutive_failures = 0
                 await self.play()
                 await self.disconnect()
+            else:
+                self._consecutive_failures += 1
             
             if not self.shutdown_requested:
-                self.log("Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
+                delay = min(
+                    _BASE_RECONNECT_DELAY * (2 ** self._consecutive_failures),
+                    _MAX_RECONNECT_DELAY,
+                )
+                delay += random.uniform(0, delay * 0.25)  # jitter
+                if self._consecutive_failures >= 5:
+                    self.log(
+                        f"Reconnect attempt {self._consecutive_failures} failed; "
+                        f"retrying in {delay:.1f}s",
+                        "warning",
+                    )
+                else:
+                    self.log(f"Reconnecting in {delay:.1f}s...")
+                await asyncio.sleep(delay)
 
 
 def parse_args() -> argparse.Namespace:
@@ -451,7 +549,7 @@ Environment variables:
     return parser.parse_args()
 
 
-async def main():
+async def main() -> None:
     """Main async entry point."""
     args = parse_args()
     

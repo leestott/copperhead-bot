@@ -5,7 +5,8 @@ Implements A*, BFS, flood-fill, Voronoi partitioning, and advanced space analysi
 Optimized for competitive tournament play.
 """
 
-from typing import Tuple, List, Set, Optional
+from __future__ import annotations
+
 from collections import deque
 import heapq
 
@@ -16,15 +17,15 @@ from utils import (
 
 
 def predict_opponent_move(
-    opponent_head: Tuple[int, int],
+    opponent_head: tuple[int, int],
     opponent_direction: str,
-    opponent_body: List[Tuple[int, int]],
-    my_head: Tuple[int, int],
-    foods: List[Tuple[int, int]],
+    opponent_body: list[tuple[int, int]],
+    my_head: tuple[int, int],
+    foods: list[tuple[int, int]],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
-) -> Tuple[int, int]:
+    obstacles: set[tuple[int, int]]
+) -> tuple[int, int]:
     """
     Predict where opponent will move next tick.
     
@@ -33,7 +34,7 @@ def predict_opponent_move(
     Returns:
         Predicted next head position
     """
-    opposite = OPPOSITES.get(opponent_direction, "")
+    opposite = OPPOSITES.get(opponent_direction or "", "")
     best_pos = None
     best_score = float('-inf')
     
@@ -77,12 +78,12 @@ def predict_opponent_move(
 
 
 def calculate_voronoi_control(
-    my_head: Tuple[int, int],
-    opponent_head: Tuple[int, int],
+    my_head: tuple[int, int],
+    opponent_head: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
-) -> Tuple[int, int, Set[Tuple[int, int]]]:
+    obstacles: set[tuple[int, int]]
+) -> tuple[int, int, set[tuple[int, int]]]:
     """
     Calculate Voronoi space partitioning - cells closer to us vs opponent.
     
@@ -139,12 +140,12 @@ def calculate_voronoi_control(
 
 
 def find_tail_chase_path(
-    head: Tuple[int, int],
-    tail: Tuple[int, int],
+    head: tuple[int, int],
+    tail: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
-) -> Optional[str]:
+    obstacles: set[tuple[int, int]]
+) -> str | None:
     """
     Find direction to chase our own tail (survival technique).
     
@@ -168,14 +169,14 @@ def find_tail_chase_path(
 
 
 def lookahead_evaluate(
-    head: Tuple[int, int],
+    head: tuple[int, int],
     direction: str,
-    body: List[Tuple[int, int]],
-    opponent_head: Optional[Tuple[int, int]],
-    opponent_body: Optional[List[Tuple[int, int]]],
+    body: list[tuple[int, int]],
+    opponent_head: tuple[int, int] | None,
+    opponent_body: list[tuple[int, int]] | None,
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
+    obstacles: set[tuple[int, int]],
     depth: int = 2
 ) -> float:
     """
@@ -184,6 +185,13 @@ def lookahead_evaluate(
     Returns:
         Score for this move considering future positions
     """
+    if not body:
+        # Without a body we can only do a shallow space eval
+        new_x, new_y = get_new_position(head[0], head[1], direction)
+        if not is_in_bounds(new_x, new_y, width, height) or (new_x, new_y) in obstacles:
+            return float('-inf')
+        return float(flood_fill_count((new_x, new_y), width, height, obstacles | {head}))
+
     if depth == 0:
         # Base case: evaluate current position
         new_x, new_y = get_new_position(head[0], head[1], direction)
@@ -229,12 +237,12 @@ def lookahead_evaluate(
 
 
 def food_race_winner(
-    my_head: Tuple[int, int],
-    opponent_head: Optional[Tuple[int, int]],
-    food_pos: Tuple[int, int],
+    my_head: tuple[int, int],
+    opponent_head: tuple[int, int] | None,
+    food_pos: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
+    obstacles: set[tuple[int, int]]
 ) -> str:
     """
     Determine who would reach food first.
@@ -265,7 +273,7 @@ def food_race_winner(
 
 
 def center_distance(
-    pos: Tuple[int, int],
+    pos: tuple[int, int],
     width: int,
     height: int
 ) -> float:
@@ -280,11 +288,11 @@ def center_distance(
 
 
 def bfs_distance(
-    start: Tuple[int, int],
-    goal: Tuple[int, int],
+    start: tuple[int, int],
+    goal: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
+    obstacles: set[tuple[int, int]]
 ) -> int:
     """
     Calculate shortest path distance using BFS.
@@ -323,12 +331,12 @@ def bfs_distance(
 
 
 def bfs_path(
-    start: Tuple[int, int],
-    goal: Tuple[int, int],
+    start: tuple[int, int],
+    goal: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
-) -> Optional[List[Tuple[int, int]]]:
+    obstacles: set[tuple[int, int]]
+) -> list[tuple[int, int]] | None:
     """
     Find shortest path using BFS.
     
@@ -366,14 +374,14 @@ def bfs_path(
 
 
 def astar_path(
-    start: Tuple[int, int],
-    goal: Tuple[int, int],
+    start: tuple[int, int],
+    goal: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
-    danger_zones: Optional[Set[Tuple[int, int]]] = None,
+    obstacles: set[tuple[int, int]],
+    danger_zones: set[tuple[int, int]] | None = None,
     danger_penalty: int = 5
-) -> Optional[List[Tuple[int, int]]]:
+) -> list[tuple[int, int]] | None:
     """
     Find path using A* algorithm with optional danger zone penalties.
     
@@ -436,11 +444,11 @@ def astar_path(
 
 
 def flood_fill_count(
-    start: Tuple[int, int],
+    start: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
-    max_depth: Optional[int] = None
+    obstacles: set[tuple[int, int]],
+    max_depth: int | None = None
 ) -> int:
     """
     Count reachable cells using flood-fill from a starting position.
@@ -480,12 +488,12 @@ def flood_fill_count(
 
 
 def flood_fill_reachable(
-    start: Tuple[int, int],
+    start: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
-    max_depth: Optional[int] = None
-) -> Set[Tuple[int, int]]:
+    obstacles: set[tuple[int, int]],
+    max_depth: int | None = None
+) -> set[tuple[int, int]]:
     """
     Get all reachable cells using flood-fill.
     
@@ -520,12 +528,12 @@ def flood_fill_reachable(
 
 
 def get_safe_moves(
-    head: Tuple[int, int],
+    head: tuple[int, int],
     current_direction: str,
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
-) -> List[str]:
+    obstacles: set[tuple[int, int]]
+) -> list[str]:
     """
     Get all moves that don't result in immediate death.
     
@@ -539,8 +547,6 @@ def get_safe_moves(
     Returns:
         List of safe direction strings
     """
-    from utils import OPPOSITES
-    
     safe = []
     opposite = OPPOSITES.get(current_direction, "")
     
@@ -565,10 +571,10 @@ def get_safe_moves(
 
 
 def get_corridor_score(
-    pos: Tuple[int, int],
+    pos: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]]
+    obstacles: set[tuple[int, int]]
 ) -> int:
     """
     Calculate a corridor score - lower means more enclosed.
@@ -591,12 +597,12 @@ def get_corridor_score(
 
 
 def find_opponent_danger_zone(
-    opponent_head: Tuple[int, int],
+    opponent_head: tuple[int, int],
     opponent_direction: str,
     width: int,
     height: int,
     radius: int = 2
-) -> Set[Tuple[int, int]]:
+) -> set[tuple[int, int]]:
     """
     Calculate positions where opponent could reach within N moves.
     
@@ -634,12 +640,12 @@ def find_opponent_danger_zone(
 
 
 def calculate_space_after_move(
-    head: Tuple[int, int],
+    head: tuple[int, int],
     direction: str,
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
-    my_tail: Optional[Tuple[int, int]] = None
+    obstacles: set[tuple[int, int]],
+    my_tail: tuple[int, int] | None = None
 ) -> int:
     """
     Calculate reachable space after making a move.
@@ -679,10 +685,10 @@ def calculate_space_after_move(
 
 
 def is_dead_end(
-    pos: Tuple[int, int],
+    pos: tuple[int, int],
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
+    obstacles: set[tuple[int, int]],
     min_space: int = 5
 ) -> bool:
     """
@@ -703,13 +709,13 @@ def is_dead_end(
 
 
 def find_best_direction_by_space(
-    head: Tuple[int, int],
+    head: tuple[int, int],
     current_direction: str,
     width: int,
     height: int,
-    obstacles: Set[Tuple[int, int]],
-    my_tail: Optional[Tuple[int, int]] = None
-) -> Optional[str]:
+    obstacles: set[tuple[int, int]],
+    my_tail: tuple[int, int] | None = None
+) -> str | None:
     """
     Find the direction that maximizes reachable space.
     
