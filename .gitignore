@@ -40,13 +40,15 @@ env/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs and runtime output
 *.log
 *.err
-live_probe.log
-live_probe_*.log
-live_probe_*.err
+
+# Bot runtime state
 .copperhead-learning.json
+
+# Environment config
+.env
 
 # Test coverage
 htmlcov/

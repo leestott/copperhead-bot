@@ -8,7 +8,8 @@ A high-performance, competitive Snake AI bot designed for CopperHead Bot Hack To
 - **Tournament-Ready**: Handles multiple consecutive games with clean state resets
 - **Protocol Compliant**: Full WebSocket protocol compliance with proper message handling
 - **Dynamic Awareness**: Reads grid dimensions from server, tracks all game objects
-- **Deterministic Behavior**: Predictable, explainable decision-making
+- **Persistent Learning**: Adapts weights across matches via per-opponent and cohort profiles
+- **Auto-Redeploy**: Re-enters the tournament automatically after round losses
 
 ## Quick Start
 
@@ -21,7 +22,7 @@ A high-performance, competitive Snake AI bot designed for CopperHead Bot Hack To
 
 ```bash
 # Clone this repository
-git clone https://github.com/leestott/copperhead-bot.git
+git clone https://github.com/YOUR_USERNAME/copperhead-bot.git
 cd copperhead-bot
 
 # Install dependencies
@@ -103,6 +104,8 @@ copperhead-bot/
 | `BOT_NAME` | Display name for the bot | `CopperheadChampion` |
 | `BOT_DIFFICULTY` | Internal difficulty setting (1-10) | `10` |
 | `BOT_QUIET` | Suppress console output | `false` |
+| `BOT_REDEPLOY_AFTER_ROUND_LOSS` | Auto-redeploy after losing a round | `true` |
+| `BOT_REDEPLOY_LADDER_ONLY` | Only redeploy against ladder (CopperBot) opponents | `true` |
 
 ## Command-Line Arguments
 
