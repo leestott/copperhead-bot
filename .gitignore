@@ -42,6 +42,11 @@ Thumbs.db
 
 # Logs
 *.log
+*.err
+live_probe.log
+live_probe_*.log
+live_probe_*.err
+.copperhead-learning.json
 
 # Test coverage
 htmlcov/
